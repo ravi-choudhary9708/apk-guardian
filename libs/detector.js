@@ -1,27 +1,39 @@
-// src/lib/detector.js
-export function detectFake(apkMeta) {
-  const suspicious = [];
+// app/api/upload/route.js
+import { NextResponse } from "next/server";
+import ApkReader from "node-apk-parser";
 
-  // Rule 1: Dangerous permissions
-  const risky = ["SEND_SMS", "READ_SMS", "WRITE_SMS", "READ_CONTACTS", "SYSTEM_ALERT_WINDOW"];
-  if (apkMeta.permissions?.some((p) => risky.some((r) => p.includes(r)))) {
-    suspicious.push("Requests dangerous permissions (SMS/Contacts).");
+// Fake detector utility (improved defensive coding)
+export function detectFake(apkMeta) {
+  const reasons = [];
+
+  if (!apkMeta) {
+    return { isFake: true, reasons: ["Could not parse APK metadata"] };
   }
 
- // Rule 2: Weird package name
-if (
-  typeof apkMeta.package === "string" &&
-  (apkMeta.package.includes("com.update") || apkMeta.package.includes("com.bank.fake"))
-) {
-  suspicious.push("Suspicious package name.");
-}
-  // Rule 3: No version info
-  if (!apkMeta.versionName) {
-    suspicious.push("Missing version info.");
+  // Rule 1: Dangerous permissions
+  const dangerousPermissions = ["SEND_SMS", "CALL_PHONE", "READ_CONTACTS"];
+  const perms = apkMeta.usesPermissions || [];
+  if (perms.some(p => dangerousPermissions.includes(p.name))) {
+    reasons.push("Uses dangerous permissions");
+  }
+
+  // Rule 2: Suspicious package name
+  const pkg = apkMeta.package || "";
+  if (
+    pkg.includes("hack") ||
+    pkg.includes("malware") ||
+    pkg.includes("test")
+  ) {
+    reasons.push("Suspicious package name");
+  }
+
+  // Rule 3: Missing version info
+  if (!apkMeta.versionName || !apkMeta.versionCode) {
+    reasons.push("Missing version info");
   }
 
   return {
-    isFake: suspicious.length > 0,
-    reasons: suspicious,
+    isFake: reasons.length > 0,
+    reasons,
   };
 }
