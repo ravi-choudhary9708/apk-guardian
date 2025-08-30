@@ -5,8 +5,11 @@ import ApkReader from "node-apk-parser";
 import Report from "@/models/Report";
 import dbConnect from "@/libs/db";
 import { detectFake } from "@/libs/detector";
-import { scanWithVirusTotal, getVirusTotalReport } from "@/libs/virusTotal";
+import { scanAndSummarizeWithVirusTotal } from "@/libs/virusTotal";
 import crypto from "crypto";
+import { verifyApkCertificate } from "@/libs/certVerifier"; 
+import Certificate from "@/models/Certificate";
+import TrustedCert from "@/models/TrustedCert"; // 🔥 NEW
 
 // Banking app baseline permissions (example set)
 const bankingBaseline = [
@@ -27,7 +30,6 @@ const suspiciousPermissions = [
   "android.permission.READ_CONTACTS",
   "android.permission.ACCESS_FINE_LOCATION"
 ];
-
 
 // Ensure /uploads exists
 const uploadDir = path.join(process.cwd(), "uploads");
@@ -52,12 +54,12 @@ export async function POST(req) {
     const uploaderIp = headers.get("x-forwarded-for") || "unknown";
     const userAgent = headers.get("user-agent");
 
-    // ✅ Validate file type
+    // Validate file type
     if (!file.name.endsWith(".apk")) {
       return NextResponse.json({ success: false, error: "Only .apk files are allowed" }, { status: 400 });
     }
 
-    // ✅ Validate file size (<10MB)
+    // Validate file size (<10MB)
     const MAX_SIZE = 10 * 1024 * 1024;
     if (file.size > MAX_SIZE) {
       return NextResponse.json({ success: false, error: "File too large. Max 10MB allowed." }, { status: 400 });
@@ -69,14 +71,14 @@ export async function POST(req) {
     const filePath = path.join(uploadDir, fileName);
     fs.writeFileSync(filePath, buffer);
 
-    // ✅ Generate SHA256 hash
+    // Generate SHA256 hash
     const hash = crypto.createHash("sha256").update(buffer).digest("hex");
 
-    // ✅ Parse APK metadata
+    // Parse APK metadata
     const reader = ApkReader.readFile(filePath);
     const manifest = reader.readManifestSync();
 
-      // Extract permissions
+    // Extract permissions
     const permissions = manifest.usesPermissions?.map(p => p.name) || [];
 
     // Analyze permissions
@@ -101,19 +103,39 @@ export async function POST(req) {
       permissions: manifest.usesPermissions ? manifest.usesPermissions.map((p) => p.name) : [],
     };
 
-    // ✅ Run fake detector
+    // Run fake detector
     const { isFake, reasons } = detectFake(apkMeta);
 
-// 2. VirusTotal Scan
-    const vtScan = await scanWithVirusTotal(buffer, file.name);
-    let vtReport = null;
-    if (vtScan?.data?.id) {
-      vtReport = await getVirusTotalReport(vtScan.data.id);
-    }
-    console.log("vtscan:",vtScan);
-    console.log("vtreport",vtReport);
+    // VirusTotal Scan
+    const vtresult = await scanAndSummarizeWithVirusTotal(buffer, file.name);
 
-    // ✅ Save metadata to MongoDB
+    // Certificate verification
+    const certCheck = await verifyApkCertificate(buffer);
+
+    // 🔍 TrustedCert DB Lookup
+    let trustStatus = "unknown";
+    let bankMatch = null;
+
+    if (certCheck?.certificate?.sha256Fingerprint) {
+      const trusted = await TrustedCert.findOne({
+        certFingerprint: certCheck.certificate.sha256Fingerprint,
+      });
+
+      if (trusted) {
+        trustStatus = "trusted";
+        bankMatch = trusted.bankName;
+      } else if (certCheck.certificate.isSelfSigned) {
+        trustStatus = "self-signed";
+      } else {
+        trustStatus = "untrusted";
+      }
+
+      if (certCheck.certificate.validTo && new Date(certCheck.certificate.validTo) < new Date()) {
+        trustStatus = "expired";
+      }
+    }
+
+    // Save metadata to MongoDB
     const report = await Report.create({
       hash,
       size: buffer.length,
@@ -128,17 +150,37 @@ export async function POST(req) {
       permissions: apkMeta.permissions,
       detectionResult: isFake ? "fake" : "safe",
       reasons,
+      trustStatus,
+      bankMatch,
+    });
+
+    const certificate = await Certificate.create({
+      sha256Fingerprint: certCheck.certificate?.sha256Fingerprint,
+      subjectCN: certCheck.certificate?.subjectCN,
+      issuerCN: certCheck.certificate?.issuerCN,
+      validFrom: certCheck.certificate?.validFrom,
+      validTo: certCheck.certificate?.validTo,
+      signatureAlgorithm: certCheck.certificate?.signatureAlgorithm,
+      keyType: certCheck.certificate?.keyType,
+      keySizeBits: certCheck.certificate?.keySizeBits,
+      isSelfSigned: certCheck.certificate?.isSelfSigned,
+      warnings: certCheck.warnings || [],
+      detectionResult: isFake ? "fake" : "safe",
+      trustStatus,
+      bankMatch,
     });
 
     return NextResponse.json({
       success: true,
       apkMeta,
-       analysis: {
-          fakeCheck:isFake,
-          virusTotal: vtReport,
-        },
-        permissions: permissionAnalysis,
+      analysis: {
+        fakeCheck: isFake,
+        virusTotal: vtresult,
+      },
+      permissions: permissionAnalysis,
       result: { isFake, reasons },
+      certificate,
+      trust: { trustStatus, bankMatch },
       reportId: report._id,
     });
   } catch (err) {
