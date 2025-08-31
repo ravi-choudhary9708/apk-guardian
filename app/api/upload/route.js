@@ -14,6 +14,7 @@ import { analyzeNetwork } from "@/libs/networkAnalyzer";
 import { calculateRiskScore } from "@/libs/riskCalculator";
 
 
+
 // Banking app baseline permissions (example set)
 const bankingBaseline = [
   "android.permission.INTERNET",
@@ -125,8 +126,9 @@ export async function POST(req) {
   permissions: permissionAnalysis,
   networkAnalysis: networkCheck,
 });
-    console.log("risk:",riskLevel)
+    console.log("risk:",riskLevel);
 
+   
     // 🔍 TrustedCert DB Lookup
     let trustStatus = "unknown";
     let bankMatch = null;
