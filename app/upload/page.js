@@ -5,8 +5,7 @@ import { useState } from "react";
 export default function Home() {
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [analysis, setAnalysis] = useState(null);
-  const [apkMeta, setApkMeta] = useState(null);
+  const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
 
   async function handleUpload(e) {
@@ -18,7 +17,7 @@ export default function Home() {
 
     setLoading(true);
     setError(null);
-    setAnalysis(null);
+    setResult(null);
 
     try {
       const formData = new FormData();
@@ -32,8 +31,7 @@ export default function Home() {
       if (!res.ok) throw new Error("Upload failed");
 
       const data = await res.json();
-      setApkMeta(data.apkMeta);
-      setAnalysis(data.analysis);
+      setResult(data);
     } catch (err) {
       console.error(err);
       setError("Something went wrong!");
@@ -61,7 +59,7 @@ export default function Home() {
   }
 
   function renderVirusTotal(vt) {
-    if (!vt?.data?.attributes?.stats) {
+    if (!vt || !vt?.data?.attributes?.stats) {
       return <p>⚠ VirusTotal report not available</p>;
     }
 
@@ -104,10 +102,78 @@ export default function Home() {
     );
   }
 
+  function renderCertificate(cert, trust) {
+    if (!cert) return null;
+
+    return (
+      <div style={{ marginTop: "15px" }}>
+        <h2>🔑 Certificate</h2>
+        <p><strong>Fingerprint:</strong> {cert.sha256Fingerprint}</p>
+        <p><strong>Subject:</strong> {cert.subjectCN}</p>
+        <p><strong>Issuer:</strong> {cert.issuerCN}</p>
+        <p><strong>Valid From:</strong> {new Date(cert.validFrom).toLocaleString()}</p>
+        <p><strong>Valid To:</strong> {new Date(cert.validTo).toLocaleString()}</p>
+        <p><strong>Algorithm:</strong> {cert.signatureAlgorithm}</p>
+        <p><strong>Key:</strong> {cert.keyType} ({cert.keySizeBits} bits)</p>
+        <p><strong>Self-signed:</strong> {cert.isSelfSigned ? "Yes" : "No"}</p>
+        {cert.warnings?.length > 0 && (
+          <ul style={{ color: "orange" }}>
+            {cert.warnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        )}
+        <h3>Trust Check</h3>
+        <p>
+          <strong>Status:</strong>{" "}
+          {trust?.trustStatus === "trusted" ? (
+            <span style={{ color: "green" }}>✅ Trusted</span>
+          ) : trust?.trustStatus === "self-signed" ? (
+            <span style={{ color: "orange" }}>⚠ Self-signed</span>
+          ) : (
+            <span style={{ color: "red" }}>❌ Unknown</span>
+          )}
+        </p>
+        {trust?.bankMatch && <p><strong>Bank Match:</strong> {trust.bankMatch}</p>}
+      </div>
+    );
+  }
+
+  function renderPermissions(perms) {
+    if (!perms) return null;
+
+    return (
+      <div>
+        <h2>🔒 Permissions Analysis</h2>
+        <p><strong>Total Permissions:</strong> {perms.totalPermissions}</p>
+        <p><strong>Suspicious:</strong></p>
+        {perms.flaggedSuspicious.length > 0 ? (
+          <ul>
+            {perms.flaggedSuspicious.map((p, i) => (
+              <li key={i} style={{ color: "red" }}>{p}</li>
+            ))}
+          </ul>
+        ) : (
+          <p>No suspicious permissions.</p>
+        )}
+        <p><strong>Missing Baseline:</strong></p>
+        {perms.missingBaseline.length > 0 ? (
+          <ul>
+            {perms.missingBaseline.map((p, i) => (
+              <li key={i} style={{ color: "orange" }}>{p}</li>
+            ))}
+          </ul>
+        ) : (
+          <p>All baseline permissions present.</p>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div style={{ maxWidth: "600px", margin: "50px auto", textAlign: "center" }}>
+    <div style={{ maxWidth: "700px", margin: "50px auto", textAlign: "center" }}>
       <h1>APK Guardian</h1>
-      <p>Upload an APK file for fake detection & VirusTotal scan</p>
+      <p>Upload an APK file for metadata, permission, certificate & VirusTotal checks</p>
 
       <form onSubmit={handleUpload}>
         <input
@@ -135,7 +201,7 @@ export default function Home() {
 
       {error && <p style={{ color: "red" }}>{error}</p>}
 
-      {(apkMeta || analysis) && (
+      {result && (
         <div
           style={{
             marginTop: "20px",
@@ -148,22 +214,24 @@ export default function Home() {
         >
           <h2>📦 APK Metadata</h2>
           <p><strong>File:</strong> {file?.name}</p>
-          <p><strong>Package:</strong> {apkMeta?.packageName}</p>
+          <p><strong>Package:</strong> {result.apkMeta?.packageName}</p>
           <p>
-            <strong>Version:</strong> {apkMeta?.versionName} ({apkMeta?.versionCode})
+            <strong>Version:</strong> {result.apkMeta?.versionName} ({result.apkMeta?.versionCode})
           </p>
           <p><strong>Permissions:</strong></p>
           <ul>
-            {apkMeta?.permissions?.length > 0 ? (
-              apkMeta.permissions.map((perm, i) => <li key={i}>{perm}</li>)
+            {result.apkMeta?.permissions?.length > 0 ? (
+              result.apkMeta.permissions.map((perm, i) => <li key={i}>{perm}</li>)
             ) : (
               <li>No special permissions</li>
             )}
           </ul>
 
           <h2>🧪 Analysis</h2>
-          {renderFakeCheck(analysis?.fakeCheck, analysis?.reasons)}
-          {renderVirusTotal(analysis?.virusTotal)}
+          {renderFakeCheck(result.result?.isFake, result.result?.reasons)}
+          {renderVirusTotal(result.analysis?.virusTotal)}
+          {renderPermissions(result.permissions)}
+          {renderCertificate(result.certificate, result.trust)}
         </div>
       )}
     </div>

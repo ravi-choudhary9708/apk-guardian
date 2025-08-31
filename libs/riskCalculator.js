@@ -1,18 +1,8 @@
-// analyzeAPK.js
-import { APK } from "apk-parser3";
-import fs from "fs";
-import path from "path";
-import { verifyApkCertificate } from "@/libs/certVerifier.js";
-import { detectFake } from "@/libs/detector.js";
-import { scanAndSummarizeWithVirusTotal } from "@/libs/virusTotal.js";
-import { analyzeNetwork } from "./libs/networkAnalyzer.js";
-
-
-// --- Risk Scoring System ---
-function calculateRiskScore(analysis) {
+export function calculateRiskScore(analysis) {
   let score = 0;
   let reasons = [];
 
+  
   // Certificate Check
   if (analysis.certificate.isSelfSigned) {
     score += 25;

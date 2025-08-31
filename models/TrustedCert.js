@@ -31,6 +31,9 @@ const TrustedCertSchema = new mongoose.Schema({
   notes: {
     type: String,
   }, // optional: any manual notes
+  addedBy: {
+    type: String,
+  }, // which admin added this cert
   createdAt: {
     type: Date,
     default: Date.now,
@@ -39,3 +42,4 @@ const TrustedCertSchema = new mongoose.Schema({
 
 export default mongoose.models.TrustedCert ||
   mongoose.model("TrustedCert", TrustedCertSchema);
+

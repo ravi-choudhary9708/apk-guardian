@@ -9,7 +9,10 @@ import { scanAndSummarizeWithVirusTotal } from "@/libs/virusTotal";
 import crypto from "crypto";
 import { verifyApkCertificate } from "@/libs/certVerifier"; 
 import Certificate from "@/models/Certificate";
-import TrustedCert from "@/models/TrustedCert"; // 🔥 NEW
+import TrustedCert from "@/models/TrustedCert"; 
+import { analyzeNetwork } from "@/libs/networkAnalyzer";
+import { calculateRiskScore } from "@/libs/riskCalculator";
+
 
 // Banking app baseline permissions (example set)
 const bankingBaseline = [
@@ -112,6 +115,18 @@ export async function POST(req) {
     // Certificate verification
     const certCheck = await verifyApkCertificate(buffer);
 
+    //network analysis
+    const networkCheck= await analyzeNetwork(filePath);
+    console.log("network",networkCheck);
+
+   const riskLevel = calculateRiskScore({
+  certificate: certCheck.certificate,
+  virusTotal: vtresult,
+  permissions: permissionAnalysis,
+  networkAnalysis: networkCheck,
+});
+    console.log("risk:",riskLevel)
+
     // 🔍 TrustedCert DB Lookup
     let trustStatus = "unknown";
     let bankMatch = null;
@@ -176,6 +191,8 @@ export async function POST(req) {
       analysis: {
         fakeCheck: isFake,
         virusTotal: vtresult,
+        networkAnalysis:networkCheck,
+        riskLevel:riskLevel
       },
       permissions: permissionAnalysis,
       result: { isFake, reasons },
