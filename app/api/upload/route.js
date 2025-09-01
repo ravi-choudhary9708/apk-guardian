@@ -1,21 +1,25 @@
 import { NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
-import ApkReader from "node-apk-parser";
+
 import Report from "@/models/Report";
 import dbConnect from "@/libs/db";
 import { detectFake } from "@/libs/detector";
 import { scanAndSummarizeWithVirusTotal } from "@/libs/virusTotal";
 import crypto from "crypto";
-import { verifyApkCertificate } from "@/libs/certVerifier"; 
+import { verifyApkCertificate } from "@/libs/certVerifier";
 import Certificate from "@/models/Certificate";
-import TrustedCert from "@/models/TrustedCert"; 
+import TrustedCert from "@/models/TrustedCert";
 import { analyzeNetwork } from "@/libs/networkAnalyzer";
 import { calculateRiskScore } from "@/libs/riskCalculator";
+import { v2 as cloudinary } from "cloudinary";
 
+// Cloudinary setup
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
-
-// Banking app baseline permissions (example set)
+// Banking app baseline permissions
 const bankingBaseline = [
   "android.permission.INTERNET",
   "android.permission.ACCESS_NETWORK_STATE",
@@ -34,12 +38,6 @@ const suspiciousPermissions = [
   "android.permission.READ_CONTACTS",
   "android.permission.ACCESS_FINE_LOCATION"
 ];
-
-// Ensure /uploads exists
-const uploadDir = path.join(process.cwd(), "uploads");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
 
 export async function POST(req) {
   try {
@@ -69,42 +67,81 @@ export async function POST(req) {
       return NextResponse.json({ success: false, error: "File too large. Max 10MB allowed." }, { status: 400 });
     }
 
-    // Save file
+    // Convert file to Buffer
     const buffer = Buffer.from(await file.arrayBuffer());
-    const fileName = `${Date.now()}-${file.name}`;
-    const filePath = path.join(uploadDir, fileName);
-    fs.writeFileSync(filePath, buffer);
+
+    // Upload to Cloudinary
+    const uploadedFile = await new Promise((resolve, reject) => {
+      cloudinary.uploader.upload_stream(
+        { resource_type: "raw", folder: "apk_uploads" }, // keep as raw to support .apk
+        (error, result) => {
+          if (error) reject(error);
+          else resolve(result);
+        }
+      ).end(buffer);
+    });
+
+    const fileUrl = uploadedFile.secure_url;
+    const fileName = uploadedFile.original_filename;
 
     // Generate SHA256 hash
     const hash = crypto.createHash("sha256").update(buffer).digest("hex");
 
-    // Parse APK metadata
-    const reader = ApkReader.readFile(filePath);
-    const manifest = reader.readManifestSync();
+    // SOLUTION 1: Try different import approaches for apk-parser3
+    let manifest, permissions = [], apkMeta = {};
+    
+    try {
+      // Method 1: Try default import
+      const apkParser = await import("apk-parser3");
+      
+      if (apkParser.default && apkParser.default.readBuffer) {
+        const reader = apkParser.default.readBuffer(buffer);
+        manifest = reader.readManifestSync();
+      } else if (apkParser.ApkReader) {
+        // Method 2: Named import
+        const reader = apkParser.ApkReader.readBuffer(buffer);
+        manifest = reader.readManifestSync();
+      } else if (apkParser.readBuffer) {
+        // Method 3: Direct function import
+        const reader = apkParser.readBuffer(buffer);
+        manifest = reader.readManifestSync();
+      } else {
+        throw new Error("ApkReader.readBuffer not found in any expected location");
+      }
 
-    // Extract permissions
-    const permissions = manifest.usesPermissions?.map(p => p.name) || [];
+      // Extract permissions
+      permissions = manifest.usesPermissions?.map(p => p.name) || [];
+
+      apkMeta = {
+        packageName: manifest.package,
+        versionName: manifest.versionName,
+        versionCode: manifest.versionCode?.toString(),
+        permissions: permissions,
+      };
+
+    } catch (parseError) {
+      console.error("APK parsing failed:", parseError);
+      
+      // Fallback: Create basic metadata without parsing
+      apkMeta = {
+        packageName: "unknown",
+        versionName: "unknown", 
+        versionCode: "unknown",
+        permissions: [],
+      };
+      
+      permissions = [];
+    }
 
     // Analyze permissions
-    const flaggedSuspicious = permissions.filter(p =>
-      suspiciousPermissions.includes(p)
-    );
-    const missingBaseline = bankingBaseline.filter(
-      base => !permissions.includes(base)
-    );
+    const flaggedSuspicious = permissions.filter(p => suspiciousPermissions.includes(p));
+    const missingBaseline = bankingBaseline.filter(base => !permissions.includes(base));
 
     const permissionAnalysis = {
       totalPermissions: permissions.length,
       allPermissions: permissions,
       flaggedSuspicious,
       missingBaseline
-    };
-
-    const apkMeta = {
-      packageName: manifest.package,
-      versionName: manifest.versionName,
-      versionCode: manifest.versionCode?.toString(),
-      permissions: manifest.usesPermissions ? manifest.usesPermissions.map((p) => p.name) : [],
     };
 
     // Run fake detector
@@ -116,19 +153,16 @@ export async function POST(req) {
     // Certificate verification
     const certCheck = await verifyApkCertificate(buffer);
 
-    //network analysis
-    const networkCheck= await analyzeNetwork(filePath);
-    console.log("network",networkCheck);
+    // Network analysis
+    const networkCheck = await analyzeNetwork(buffer);
 
-   const riskLevel = calculateRiskScore({
-  certificate: certCheck.certificate,
-  virusTotal: vtresult,
-  permissions: permissionAnalysis,
-  networkAnalysis: networkCheck,
-});
-    console.log("risk:",riskLevel);
+    const riskLevel = calculateRiskScore({
+      certificate: certCheck.certificate,
+      virusTotal: vtresult,
+      permissions: permissionAnalysis,
+      networkAnalysis: networkCheck,
+    });
 
-   
     // 🔍 TrustedCert DB Lookup
     let trustStatus = "unknown";
     let bankMatch = null;
@@ -159,8 +193,8 @@ export async function POST(req) {
       uploaderIp,
       userAgent,
       fileName,
-      fileUrl: filePath,
-      publicId: fileName,
+      fileUrl,
+      publicId: uploadedFile.public_id,
       packageName: apkMeta.packageName,
       versionName: apkMeta.versionName,
       versionCode: apkMeta.versionCode,
@@ -193,14 +227,15 @@ export async function POST(req) {
       analysis: {
         fakeCheck: isFake,
         virusTotal: vtresult,
-        networkAnalysis:networkCheck,
-        riskLevel:riskLevel
+        networkAnalysis: networkCheck,
+        riskLevel: riskLevel,
       },
       permissions: permissionAnalysis,
       result: { isFake, reasons },
       certificate,
       trust: { trustStatus, bankMatch },
       reportId: report._id,
+      cloudinaryUrl: fileUrl,
     });
   } catch (err) {
     console.error("Upload error:", err);
