@@ -79,6 +79,48 @@ function extractPackageName(url) {
 }
 
 /**
+ * Performs a web search for the given package name on trusted domains.
+ * @param {string} packageName The package name to search for.
+ * @returns {Promise<object>} An object containing the search results.
+ */
+const performWebSearch = async (packageName) => {
+  const trustedDomains = [
+    "apkmirror.com",
+    "samsungapps.com",
+    "f-droid.org"
+  ];
+  
+  const queries = trustedDomains.map(domain => `site:${domain} ${packageName}`);
+  
+  try {
+    const results = await google_search.search(queries);
+    const foundSources = results.filter(result => result.results.length > 0)
+                               .map(result => result.query.split(' ')[0].replace('site:', ''));
+    
+    if (foundSources.length > 0) {
+      return {
+        status: "Found",
+        message: `App found on these trusted stores: ${foundSources.join(', ')}.`,
+        data: {
+          sources: foundSources
+        }
+      };
+    } else {
+      return {
+        status: "NotFound",
+        message: "App not found on other trusted app stores."
+      };
+    }
+  } catch (err) {
+    return {
+      status: "Error",
+      message: `Web search failed: ${err.message}`
+    };
+  }
+};
+
+
+/**
  * Checks and analyzes a given APK link against multiple sources.
  * @param {string} apkUrl The URL of the APK.
  * @returns {Promise<object>} An object containing the analysis results.
@@ -111,7 +153,7 @@ export async function checkAPKLink(apkUrl) {
       }
     };
 
-    // Layer 1: Check against Google Play Store
+    // Layer 1: Check against Google Play Store (direct search)
     let playData = null;
     try {
       playData = await gplay.app({ appId: packageName });
@@ -146,7 +188,22 @@ export async function checkAPKLink(apkUrl) {
       };
     }
     
-    // Layer 2: Malware/Safety scan
+    // Layer 2: Web Search on other trusted stores
+    if (results.authenticity === "unverified") {
+      const webSearchResult = await performWebSearch(packageName);
+      results.checks.webSearch = {
+        status: webSearchResult.status,
+        message: webSearchResult.message,
+        data: webSearchResult.data
+      };
+      
+      if (webSearchResult.status === "Found") {
+        results.authenticity = "unverified-trusted-source";
+        results.message = "App not on Play Store but found on a trusted source. Exercise caution.";
+      }
+    }
+
+    // Layer 3: Malware/Safety scan
     const malwareScanResult = await performMalwareScan(apkUrl);
     results.checks.malwareScan = {
       status: malwareScanResult.status,
